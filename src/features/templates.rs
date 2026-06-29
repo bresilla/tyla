@@ -11,7 +11,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use tylax::templates::{parse_document_class, DocumentClass};
+//! use tyla::templates::{parse_document_class, DocumentClass};
 //!
 //! let doc_class = parse_document_class(r"\documentclass[12pt,twocolumn]{article}");
 //! assert_eq!(doc_class.class_name, "article");

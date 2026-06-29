@@ -26,7 +26,7 @@
 //!        │
 //!        ▼
 //!    ┌───────────────┐
-//!    │    Tylax      │  (Existing converter)
+//!    │    tyla       │  (Existing converter)
 //!    │   Converter   │
 //!    └───────────────┘
 //!        │
@@ -37,7 +37,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use tylax::expand_macros;
+//! use tyla::expand_macros;
 //!
 //! let input = r#"
 //! #let n = 3

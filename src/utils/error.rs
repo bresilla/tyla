@@ -1,4 +1,4 @@
-//! Error handling for Tylax conversions
+//! Error handling for tyla conversions
 //!
 //! This module provides a unified error type and result type for all
 //! conversion operations.

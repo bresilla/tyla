@@ -264,7 +264,7 @@ pub fn convert_math_with_ast_options(input: &str, options: L2TOptions) -> String
 /// # Example
 ///
 /// ```
-/// use tylax::core::latex2typst::latex_to_typst_with_eval;
+/// use tyla::core::latex2typst::latex_to_typst_with_eval;
 ///
 /// let input = r"\newcommand{\R}{\mathbb{R}} $x \in \R$";
 /// let output = latex_to_typst_with_eval(input);
@@ -287,7 +287,7 @@ pub fn latex_to_typst_with_eval(input: &str) -> String {
 /// # Example
 ///
 /// ```
-/// use tylax::core::latex2typst::latex_math_to_typst_with_eval;
+/// use tyla::core::latex2typst::latex_math_to_typst_with_eval;
 ///
 /// let input = r"\newcommand{\R}{\mathbb{R}} x \in \R";
 /// let output = latex_math_to_typst_with_eval(input);
@@ -310,7 +310,7 @@ pub fn latex_math_to_typst_with_eval(input: &str) -> String {
 /// # Example
 ///
 /// ```
-/// use tylax::core::latex2typst::latex_to_typst_with_diagnostics;
+/// use tyla::core::latex2typst::latex_to_typst_with_diagnostics;
 ///
 /// let result = latex_to_typst_with_diagnostics(r"\documentclass{article}\begin{document}Hello\end{document}");
 /// println!("Output: {}", result.output);

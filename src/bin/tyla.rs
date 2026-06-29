@@ -1,4 +1,4 @@
-//! Tylax CLI - High-performance bidirectional LaTeX <-> Typst converter
+//! tyla CLI - High-performance bidirectional LaTeX <-> Typst converter
 
 #[cfg(feature = "cli")]
 use clap::{Parser, Subcommand, ValueEnum};
@@ -7,7 +7,7 @@ use std::fs;
 #[cfg(feature = "cli")]
 use std::io::{self, Read, Write};
 #[cfg(feature = "cli")]
-use tylax::{
+use tyla::{
     batch::{convert_batch, BatchDirection, BatchFileStatus, BatchOptions},
     convert_auto, convert_auto_document, detect_format,
     diagnostics::{check_latex, format_diagnostics},
@@ -19,10 +19,10 @@ use tylax::{
 
 #[cfg(feature = "cli")]
 #[derive(Parser)]
-#[command(name = "t2l")]
+#[command(name = "tyla")]
 #[command(author = "SciPenAI")]
 #[command(version)]
-#[command(about = "Tylax - High-performance bidirectional LaTeX <-> Typst converter", long_about = None)]
+#[command(about = "tyla - High-performance bidirectional LaTeX <-> Typst converter", long_about = None)]
 struct Cli {
     /// Subcommand to run
     #[command(subcommand)]
@@ -550,7 +550,7 @@ fn handle_subcommand(cmd: Commands) -> io::Result<()> {
         }
 
         Commands::Info => {
-            println!("Tylax - High-performance bidirectional LaTeX <-> Typst converter");
+            println!("tyla - High-performance bidirectional LaTeX <-> Typst converter");
             println!("Version: {}", env!("CARGO_PKG_VERSION"));
             println!();
             println!("Features:");
@@ -730,6 +730,6 @@ fn main() {
     eprintln!("CLI feature not enabled. Build with --features cli");
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  cargo install tylax --features cli");
+    eprintln!("  cargo install tyla --features cli");
     eprintln!("  t2l [OPTIONS] [INPUT_FILE]");
 }

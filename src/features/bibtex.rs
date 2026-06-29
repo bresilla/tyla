@@ -12,7 +12,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use tylax::bibtex::{parse_bibtex, BibEntry};
+//! use tyla::bibtex::{parse_bibtex, BibEntry};
 //!
 //! let bib = r#"
 //! @article{einstein1905,

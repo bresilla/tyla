@@ -292,7 +292,7 @@ pub fn typst_document_to_latex(input: &str) -> String {
 ///
 /// # Example
 /// ```ignore
-/// use tylax::core::typst2latex::{typst_to_latex_with_diagnostics, T2LOptions};
+/// use tyla::core::typst2latex::{typst_to_latex_with_diagnostics, T2LOptions};
 ///
 /// let input = r#"
 /// #let fib(n) = if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
@@ -372,7 +372,7 @@ pub fn typst_to_latex_with_eval(input: &str, options: &T2LOptions) -> String {
 
     // Print warnings to stderr (preserving CLI/script side effects)
     for warning in &result.warnings {
-        eprintln!("[tylax] Warning: {}", warning);
+        eprintln!("[tyla] Warning: {}", warning);
     }
 
     result.output

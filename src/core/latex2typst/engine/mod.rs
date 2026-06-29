@@ -150,7 +150,7 @@ pub struct ExpandResult {
 /// # Example
 ///
 /// ```
-/// use tylax::core::latex2typst::engine::expand_latex;
+/// use tyla::core::latex2typst::engine::expand_latex;
 ///
 /// let input = r"\newcommand{\pair}[2]{\langle #1, #2\rangle} \pair{a}{b}";
 /// let output = expand_latex(input);
@@ -181,7 +181,7 @@ pub fn expand_latex(input: &str) -> String {
 /// # Example
 ///
 /// ```
-/// use tylax::core::latex2typst::engine::expand_latex_with_warnings;
+/// use tyla::core::latex2typst::engine::expand_latex_with_warnings;
 ///
 /// let result = expand_latex_with_warnings(r"\newcommand{\x}{y} \x", false);
 /// assert!(result.output.contains("y"));

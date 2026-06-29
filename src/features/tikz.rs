@@ -16,7 +16,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use tylax::tikz::convert_tikz_to_cetz;
+//! use tyla::tikz::convert_tikz_to_cetz;
 //!
 //! let tikz = r"\draw (0,0) -- (1,1);";
 //! let cetz = convert_tikz_to_cetz(tikz);

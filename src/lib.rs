@@ -1,4 +1,4 @@
-//! # tylax
+//! # tyla
 //!
 //! High-performance bidirectional LaTeX ↔ Typst converter written in Rust.
 //!
@@ -17,7 +17,7 @@
 //! ### Math Formula Conversion
 //!
 //! ```rust
-//! use tylax::{latex_to_typst, typst_to_latex};
+//! use tyla::{latex_to_typst, typst_to_latex};
 //!
 //! // LaTeX → Typst
 //! let typst = latex_to_typst(r"\frac{1}{2}");
@@ -31,7 +31,7 @@
 //! ### Full Document Conversion
 //!
 //! ```rust
-//! use tylax::{latex_document_to_typst, typst_document_to_latex};
+//! use tyla::{latex_document_to_typst, typst_document_to_latex};
 //!
 //! let typst = latex_document_to_typst(r#"
 //!     \documentclass{article}

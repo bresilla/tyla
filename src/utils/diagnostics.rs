@@ -11,7 +11,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use tylax::diagnostics::{check_latex, DiagnosticLevel};
+//! use tyla::diagnostics::{check_latex, DiagnosticLevel};
 //!
 //! let diagnostics = check_latex(r"\begin{foo}");
 //! assert!(!diagnostics.is_empty());

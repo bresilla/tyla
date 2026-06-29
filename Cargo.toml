@@ -1,8 +1,8 @@
 [package]
-name = "tylax"
+name = "tyla"
 version = "0.3.6"
 edition = "2021"
-description = "Tylax - High-performance bidirectional LaTeX ↔ Typst converter"
+description = "tyla - High-performance bidirectional LaTeX ↔ Typst converter"
 license = "Apache-2.0"
 repository = "https://github.com/scipenai/tylax"
 readme = "README.md"
@@ -10,7 +10,7 @@ keywords = ["latex", "typst", "converter", "math"]
 categories = ["text-processing", "command-line-utilities"]
 
 [lib]
-name = "tylax"
+name = "tyla"
 crate-type = ["rlib"]
 
 [[bin]]
@@ -44,7 +44,7 @@ serde_yaml = { version = "0.9", optional = true }
 csv = { version = "1.3", optional = true }
 toml = { version = "0.8", optional = true }
 
-# Used by `tylax::batch`
+# Used by `tyla::batch`
 globset = "0.4"
 
 [dev-dependencies]
