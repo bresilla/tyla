@@ -266,6 +266,19 @@ impl LatexTableGenerator {
 
     /// Build the column specification string (e.g., "|l|c|r|")
     fn build_column_spec(&self) -> String {
+        // A column of non-wrapping l/c/r cannot break long prose, so a wide
+        // cell overflows the column (badly in a two-column layout). When the
+        // table carries long text cells, switch every column to an equal-width
+        // paragraph column so cells wrap within the text width.
+        if self.col_count > 0 && self.has_long_cells() {
+            let width = 0.86 / self.col_count as f64;
+            let mut spec = String::from("|");
+            for _ in 0..self.col_count {
+                spec.push_str(&format!("p{{{width:.3}\\linewidth}}|"));
+            }
+            return spec;
+        }
+
         let mut spec = String::from("|");
 
         for align in &self.col_aligns {
@@ -280,5 +293,15 @@ impl LatexTableGenerator {
         }
 
         spec
+    }
+
+    /// True if any cell holds enough text that it should wrap rather than widen
+    /// its column.
+    fn has_long_cells(&self) -> bool {
+        const WRAP_THRESHOLD: usize = 40;
+        self.rows
+            .iter()
+            .flat_map(|row| row.cells.iter())
+            .any(|cell| cell.content.chars().count() > WRAP_THRESHOLD)
     }
 }

@@ -387,6 +387,8 @@ fn build_math_attach(node: &SyntaxNode, options: &T2LOptions) -> MathIr {
     let mut sub = None;
     let mut sup = None;
     let mut primes = 0usize;
+    // Parenthesized groups peeled off a script operand (see split_script_application).
+    let mut tail: Vec<MathIr> = Vec::new();
 
     let mut index = 0;
     while index < children.len() {
@@ -401,7 +403,10 @@ fn build_math_attach(node: &SyntaxNode, options: &T2LOptions) -> MathIr {
                     && children[index + 1].kind() != SyntaxKind::Hat
                     && children[index + 1].kind() != SyntaxKind::Underscore =>
             {
-                sup = Some(Box::new(build_math_ir(children[index + 1], options)));
+                let (operand, peeled) =
+                    split_script_application(build_math_ir(children[index + 1], options));
+                sup = Some(Box::new(operand));
+                tail.extend(peeled);
                 index += 2;
                 continue;
             }
@@ -410,7 +415,10 @@ fn build_math_attach(node: &SyntaxNode, options: &T2LOptions) -> MathIr {
                     && children[index + 1].kind() != SyntaxKind::Hat
                     && children[index + 1].kind() != SyntaxKind::Underscore =>
             {
-                sub = Some(Box::new(build_math_ir(children[index + 1], options)));
+                let (operand, peeled) =
+                    split_script_application(build_math_ir(children[index + 1], options));
+                sub = Some(Box::new(operand));
+                tail.extend(peeled);
                 index += 2;
                 continue;
             }
@@ -425,12 +433,60 @@ fn build_math_attach(node: &SyntaxNode, options: &T2LOptions) -> MathIr {
         index += 1;
     }
 
-    MathIr::Script {
+    let script = MathIr::Script {
         base,
         sub,
         sup,
         primes,
+    };
+
+    if tail.is_empty() {
+        script
+    } else {
+        let mut items = Vec::with_capacity(1 + tail.len());
+        items.push(script);
+        items.extend(tail);
+        MathIr::Seq(items)
     }
+}
+
+/// In Typst, `X_t(i)` (no space) parses the subscript operand as the group
+/// `t(i)`, so the whole `(i)` is rendered inside the subscript. Mathematically
+/// this almost always means "X sub t, evaluated at (i)" — the parenthesized
+/// group belongs at the baseline, not in the script. Detect exactly that shape
+/// (a simple atom immediately followed by a parenthesized group) and peel the
+/// group(s) off so they are emitted after the attachment. Explicitly grouped
+/// operands like `X_(t(i))` arrive as a single `Delimited`, not a `Seq`, so
+/// they are deliberately left untouched.
+fn split_script_application(operand: MathIr) -> (MathIr, Vec<MathIr>) {
+    if let MathIr::Seq(items) = &operand {
+        if items.len() >= 2 && is_simple_script_atom(&items[0]) && is_paren_delimited(&items[1]) {
+            if let MathIr::Seq(mut items) = operand {
+                let head = items.remove(0);
+                return (head, items);
+            }
+        }
+    }
+    (operand, Vec::new())
+}
+
+fn is_simple_script_atom(ir: &MathIr) -> bool {
+    matches!(
+        ir,
+        MathIr::Ident(_)
+            | MathIr::Symbol(_)
+            | MathIr::Number(_)
+            | MathIr::RawLiteral(_)
+            | MathIr::Command(_)
+    )
+}
+
+fn is_paren_delimited(ir: &MathIr) -> bool {
+    matches!(
+        ir,
+        MathIr::Delimited { open, close, .. }
+            if (open == "(" || open == r"\left(") && (close == ")" || close == r"\right)")
+    )
 }
 
 fn count_math_primes(node: &SyntaxNode) -> usize {

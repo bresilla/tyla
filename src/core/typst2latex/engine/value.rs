@@ -1527,6 +1527,32 @@ fn value_to_typst_math_arg(value: &Value) -> String {
     }
 }
 
+/// Serialize the children of a list/enum item, splitting inline content from
+/// nested list/enum items. Nested items are indented by two spaces (per level,
+/// cumulatively through recursion) so that re-parsing the emitted Typst keeps
+/// the nesting — lovelace pseudocode relies on this for block structure.
+fn serialize_item_children(content: &[ContentNode]) -> (String, String) {
+    let mut inline = String::new();
+    let mut nested = String::new();
+    for child in content {
+        if matches!(
+            child,
+            ContentNode::EnumItem { .. } | ContentNode::ListItem(_)
+        ) {
+            for line in child.to_typst().lines() {
+                if !line.is_empty() {
+                    nested.push_str("  ");
+                    nested.push_str(line);
+                }
+                nested.push('\n');
+            }
+        } else {
+            inline.push_str(&child.to_typst());
+        }
+    }
+    (inline, nested)
+}
+
 impl ContentNode {
     /// Convert this content node back to Typst source code.
     pub fn to_typst(&self) -> String {
@@ -1565,16 +1591,16 @@ impl ContentNode {
                 format!("{} {}\n", prefix, inner)
             }
             ContentNode::ListItem(children) => {
-                let inner: String = children.iter().map(|c| c.to_typst()).collect();
-                format!("- {}\n", inner)
+                let (inline, nested) = serialize_item_children(children);
+                format!("- {}\n{}", inline.trim(), nested)
             }
             ContentNode::EnumItem { number, content } => {
-                let inner: String = content.iter().map(|c| c.to_typst()).collect();
-                if let Some(n) = number {
-                    format!("{}. {}\n", n, inner)
-                } else {
-                    format!("+ {}\n", inner)
-                }
+                let (inline, nested) = serialize_item_children(content);
+                let marker = match number {
+                    Some(n) => format!("{n}."),
+                    None => "+".to_string(),
+                };
+                format!("{marker} {}\n{}", inline.trim(), nested)
             }
             ContentNode::Element { name, fields } => {
                 let args: Vec<String> = fields

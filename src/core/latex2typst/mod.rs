@@ -10,6 +10,7 @@ mod environment;
 mod markup;
 mod math;
 mod table;
+mod template;
 mod utils;
 
 pub use context::{

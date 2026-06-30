@@ -211,6 +211,9 @@ pub fn escape_latex_text(text: &str) -> String {
         .replace('}', "\\}")
         .replace('~', "\\textasciitilde{}")
         .replace('^', "\\textasciicircum{}")
+        // Typst's `~` shorthand resolves to a non-breaking space (U+00A0); map it
+        // to LaTeX's `~`. Done after the tilde escape so it is not re-escaped.
+        .replace('\u{00A0}', "~")
 }
 
 /// Check if a string is a known color name

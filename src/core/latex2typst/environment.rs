@@ -26,6 +26,14 @@ pub fn convert_environment(conv: &mut LatexConverter, elem: SyntaxElement, outpu
     let env_name = env.name_tok().map(|t| t.text().to_string());
     let env_str = env_name.as_deref().unwrap_or("");
 
+    // When a paper template is detected, its front matter is emitted from the
+    // show rule, so drop these environments from the body.
+    if conv.state.template_show_rule.is_some()
+        && matches!(env_str, "frontmatter" | "abstract" | "keyword" | "IEEEkeywords")
+    {
+        return;
+    }
+
     match env_str {
         // Document environment - marks end of preamble
         "document" => {
@@ -999,16 +1007,268 @@ fn convert_subfigure(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut 
 
 /// Convert an algorithm environment
 fn convert_algorithm(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut String) {
-    output.push_str("#block(width: 100%, stroke: 1pt, inset: 10pt)[\n");
-    output.push_str("  #text(weight: \"bold\")[Algorithm]\n\n");
+    let raw = conv.extract_env_raw_content(node);
 
-    // Process as code-like content
-    let content = conv.extract_env_raw_content(node);
-    output.push_str("```\n");
-    output.push_str(&content);
-    output.push_str("\n```\n");
+    let caption = read_braced_after(&raw, "\\caption").map(|c| conv.convert_fragment(&c));
+    let label = read_braced_after(&raw, "\\label").map(|l| sanitize_label(&l));
 
-    output.push_str("]\n");
+    // The body is the inside of the nested `algorithmic` environment, if present.
+    let body = match (raw.find("\\begin{algorithmic}"), raw.find("\\end{algorithmic}")) {
+        (Some(b), Some(e)) if e > b => {
+            let after_begin = &raw[b + "\\begin{algorithmic}".len()..e];
+            // Skip an optional `[1]` line-numbering argument.
+            after_begin
+                .trim_start()
+                .strip_prefix('[')
+                .and_then(|s| s.split_once(']').map(|(_, rest)| rest))
+                .unwrap_or(after_begin)
+                .to_string()
+        }
+        _ => raw.clone(),
+    };
+
+    let lines = parse_algorithmic_body(conv, &body);
+
+    output.push_str("#figure(\n");
+    output.push_str("  kind: \"algorithm\",\n");
+    output.push_str("  supplement: [Algorithm],\n");
+    if let Some(cap) = &caption {
+        let _ = writeln!(output, "  caption: [{}],", cap);
+    }
+    output.push_str("  pseudocode-list(booktabs: true)[\n");
+    for (depth, text) in &lines {
+        let indent = "  ".repeat(depth + 2);
+        let _ = writeln!(output, "{indent}+ {text}");
+    }
+    output.push_str("  ],\n");
+    output.push(')');
+    if let Some(lbl) = &label {
+        let _ = write!(output, " <{}>", lbl);
+    }
+    output.push('\n');
+}
+
+/// Read the balanced `{...}` argument that follows `marker` in `text`.
+fn read_braced_after(text: &str, marker: &str) -> Option<String> {
+    let start = text.find(marker)? + marker.len();
+    let rest = &text[start..];
+    let open = rest.find('{')?;
+    read_balanced(&rest[open..]).map(|(inner, _)| inner)
+}
+
+/// Given a string starting at `{`, return the inner content and the byte offset
+/// just past the matching `}`.
+fn read_balanced(s: &str) -> Option<(String, usize)> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((s[1..i].to_string(), i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Algorithmic structural commands that terminate a `\State`/`\Return` run.
+const ALG_KEYWORDS: &[&str] = &[
+    "State", "Statex", "While", "EndWhile", "For", "ForAll", "EndFor", "If", "ElsIf", "Else",
+    "EndIf", "Repeat", "Until", "Loop", "EndLoop", "Procedure", "EndProcedure", "Function",
+    "EndFunction", "Return", "Comment", "Require", "Ensure",
+];
+
+fn next_keyword_at(s: &str) -> Option<&'static str> {
+    let rest = s.strip_prefix('\\')?;
+    ALG_KEYWORDS
+        .iter()
+        .filter(|kw| {
+            rest.starts_with(**kw)
+                && !rest[kw.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic())
+        })
+        // Prefer the longest match (EndWhile before While is impossible here, but
+        // ForAll must win over For).
+        .max_by_key(|kw| kw.len())
+        .copied()
+}
+
+/// Read content until the next top-level algorithmic keyword (ignoring keywords
+/// inside `{...}`). Returns the content and the offset where it stopped.
+fn read_until_keyword(s: &str) -> (String, usize) {
+    let mut depth = 0usize;
+    let mut idx = 0;
+    let bytes = s.as_bytes();
+    while idx < s.len() {
+        let ch = bytes[idx] as char;
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            '\\' if depth == 0 => {
+                if next_keyword_at(&s[idx..]).is_some() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        idx += 1;
+    }
+    (s[..idx].trim().to_string(), idx)
+}
+
+/// Parse an `algorithmic` body into `(depth, typst-markup)` lines, ready to emit
+/// as lovelace `+` items.
+fn parse_algorithmic_body(conv: &mut LatexConverter, body: &str) -> Vec<(usize, String)> {
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    let mut depth = 0usize;
+    let mut pos = 0usize;
+
+    while pos < body.len() {
+        let rest = &body[pos..];
+        // Advance to the next keyword.
+        let Some(kw) = next_keyword_at(rest) else {
+            // No keyword here; skip one char (whitespace/stray tokens).
+            let step = rest.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+            pos += step;
+            continue;
+        };
+        let after = &rest[1 + kw.len()..];
+
+        let emit = |depth: usize, text: String, lines: &mut Vec<(usize, String)>| {
+            lines.push((depth, text));
+        };
+
+        match kw {
+            "State" | "Statex" | "Require" | "Ensure" => {
+                let (content, used) = read_until_keyword(after);
+                pos += 1 + kw.len() + used;
+                emit(depth, conv.convert_fragment(&content), &mut lines);
+            }
+            "Return" => {
+                let (content, used) = read_until_keyword(after);
+                pos += 1 + kw.len() + used;
+                emit(
+                    depth,
+                    format!("*return* {}", conv.convert_fragment(&content)),
+                    &mut lines,
+                );
+            }
+            "While" | "For" | "ForAll" | "If" | "ElsIf" | "Until" | "Loop" => {
+                let (cond, used) = read_balanced(after.trim_start())
+                    .map(|(c, n)| (conv.convert_fragment(&c), n))
+                    .unwrap_or_default();
+                pos += 1 + kw.len() + (after.len() - after.trim_start().len()) + used;
+                let (line_depth, text) = match kw {
+                    "While" => {
+                        let d = depth;
+                        depth += 1;
+                        (d, format!("*while* {cond} *do*"))
+                    }
+                    "For" => {
+                        let d = depth;
+                        depth += 1;
+                        (d, format!("*for* {cond} *do*"))
+                    }
+                    "ForAll" => {
+                        let d = depth;
+                        depth += 1;
+                        (d, format!("*for each* {cond} *do*"))
+                    }
+                    "Loop" => {
+                        let d = depth;
+                        depth += 1;
+                        (d, "*loop*".to_string())
+                    }
+                    "If" => {
+                        let d = depth;
+                        depth += 1;
+                        (d, format!("*if* {cond} *then*"))
+                    }
+                    "ElsIf" => (depth.saturating_sub(1), format!("*else if* {cond} *then*")),
+                    "Until" => {
+                        depth = depth.saturating_sub(1);
+                        (depth, format!("*until* {cond}"))
+                    }
+                    _ => unreachable!(),
+                };
+                emit(line_depth, text, &mut lines);
+            }
+            "Procedure" | "Function" => {
+                let trimmed = after.trim_start();
+                let (name, n1) = read_balanced(trimmed).unwrap_or_default();
+                let (args, n2) = read_balanced(&trimmed[n1..]).unwrap_or_default();
+                pos += 1 + kw.len() + (after.len() - trimmed.len()) + n1 + n2;
+                let name = conv.convert_fragment(&name);
+                let args = conv.convert_fragment(&args);
+                // Place the argument list inside math so it does not read as a
+                // function call applied to the `#smallcaps[...]` content.
+                let proc_args = match args.strip_prefix('$').and_then(|s| s.strip_suffix('$')) {
+                    Some(inner) => format!("$({})$", inner.trim()),
+                    None if args.is_empty() => String::new(),
+                    None => format!("$({})$", args),
+                };
+                let keyword = if kw == "Procedure" {
+                    "*procedure*"
+                } else {
+                    "*function*"
+                };
+                let d = depth;
+                depth += 1;
+                emit(
+                    d,
+                    format!("{keyword} #smallcaps[{name}]{proc_args}"),
+                    &mut lines,
+                );
+            }
+            "Else" => {
+                pos += 1 + kw.len();
+                emit(depth.saturating_sub(1), "*else*".to_string(), &mut lines);
+            }
+            "Repeat" => {
+                pos += 1 + kw.len();
+                let d = depth;
+                depth += 1;
+                emit(d, "*repeat*".to_string(), &mut lines);
+            }
+            "EndWhile" | "EndFor" | "EndIf" | "EndProcedure" | "EndLoop" | "EndFunction" => {
+                pos += 1 + kw.len();
+                depth = depth.saturating_sub(1);
+                let word = match kw {
+                    "EndWhile" => "*end while*",
+                    "EndFor" => "*end for*",
+                    "EndIf" => "*end if*",
+                    "EndProcedure" => "*end procedure*",
+                    "EndFunction" => "*end function*",
+                    _ => "*end loop*",
+                };
+                emit(depth, word.to_string(), &mut lines);
+            }
+            "Comment" => {
+                let trimmed = after.trim_start();
+                let (comment, used) = read_balanced(trimmed).unwrap_or_default();
+                pos += 1 + kw.len() + (after.len() - trimmed.len()) + used;
+                let rendered = conv.convert_fragment(&comment);
+                if let Some(last) = lines.last_mut() {
+                    last.1.push_str(&format!(" #h(1fr) {rendered}"));
+                }
+            }
+            _ => {
+                pos += 1 + kw.len();
+            }
+        }
+    }
+
+    lines
 }
 
 // =============================================================================

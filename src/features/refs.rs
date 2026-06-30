@@ -598,44 +598,50 @@ pub fn citation_to_typst(group: &CiteGroup) -> String {
         return String::new();
     }
 
-    // Citations must remain explicit in Typst.
-    // Bare @key is reserved for reference-first semantics on the T2L path.
-    let mut result = String::from("#cite(");
-
-    // Add keys
-    let keys: Vec<String> = group
+    // Typst's `cite` takes a single key, so a multi-key `\cite{a,b}` becomes a
+    // run of references `@a @b`. Plain citations use the bare `@key` form (which
+    // is how the source was written); a supplement or non-normal form falls back
+    // to `#cite(<key>, ...)` per key.
+    let count = group.citations.len();
+    let body = group
         .citations
         .iter()
-        .map(|c| format!("<{}>", c.key))
-        .collect();
-    result.push_str(&keys.join(", "));
+        .enumerate()
+        .map(|(i, c)| {
+            // Attach a group suffix to the final citation only.
+            let supplement = if i + 1 == count {
+                group.suffix.as_deref()
+            } else {
+                None
+            };
+            one_citation_to_typst(&c.key, c.mode, supplement)
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
 
-    // Add form for non-normal modes
-    let mode = group.citations[0].mode;
+    match &group.prefix {
+        Some(prefix) => format!("{} {}", prefix, body),
+        None => body,
+    }
+}
+
+fn one_citation_to_typst(key: &str, mode: CitationMode, supplement: Option<&str>) -> String {
+    if mode == CitationMode::Normal && supplement.is_none() && is_simple_key(key) {
+        return format!("@{key}");
+    }
+
+    let mut result = format!("#cite(<{key}>");
     match mode {
-        CitationMode::AuthorInText => {
-            result.push_str(", form: \"prose\"");
-        }
-        CitationMode::SuppressAuthor => {
-            result.push_str(", form: \"year\"");
-        }
-        CitationMode::NoParen => {
-            result.push_str(", form: \"author\"");
-        }
+        CitationMode::AuthorInText => result.push_str(", form: \"prose\""),
+        CitationMode::SuppressAuthor => result.push_str(", form: \"year\""),
+        CitationMode::NoParen => result.push_str(", form: \"author\""),
         _ => {}
     }
-
-    // Add supplement for suffix
-    if let Some(ref suffix) = group.suffix {
-        result.push_str(&format!(", supplement: [{}]", suffix));
+    if let Some(suffix) = supplement {
+        result.push_str(&format!(", supplement: [{suffix}]"));
     }
-
     result.push(')');
-    if let Some(ref prefix) = group.prefix {
-        format!("{} {}", prefix, result)
-    } else {
-        result
-    }
+    result
 }
 
 /// Check if a citation key is simple (can use @key syntax)
@@ -875,7 +881,17 @@ mod tests {
         let citation = Citation::new("test2020".to_string());
         let group = CiteGroup::single(citation);
         let typst = citation_to_typst(&group);
-        assert_eq!(typst, r#"#cite(<test2020>)"#);
+        // A plain citation uses the bare `@key` form (valid Typst for any count).
+        assert_eq!(typst, r#"@test2020"#);
+    }
+
+    #[test]
+    fn test_citation_to_typst_multiple_keys() {
+        let mut group = CiteGroup::new();
+        group.push(Citation::new("a2020".to_string()));
+        group.push(Citation::new("b2021".to_string()));
+        // `\cite{a,b}` -> `@a @b`, never the invalid `#cite(<a>, <b>)`.
+        assert_eq!(citation_to_typst(&group), "@a2020 @b2021");
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::data::typst_compat::{
 };
 use crate::features::refs::{
     citation_mode_from_typst_form, citation_to_latex, label_to_latex, reference_to_latex, Citation,
-    CiteGroup, Reference,
+    CiteGroup, Reference, ReferenceType,
 };
 use crate::tikz::{convert_cetz_to_tikz, is_cetz_code};
 use typst_syntax::{SyntaxKind, SyntaxNode};
@@ -152,6 +152,152 @@ fn emit_rendered_math(ctx: &mut ConvertContext, math_content: &str, is_block: bo
     ctx.last_token = TokenType::Command;
 }
 
+/// If the most recently emitted output is a display-math block (`\[ ... \]`, or a
+/// bare `\begin{align} ... \end{align}`), rewrite it into a numbered `equation`
+/// environment with `label` placed *inside*, and return true. Typst attaches an
+/// equation label as a trailing `<label>`, but LaTeX needs it inside the
+/// environment for the number to resolve. Returns false when the preceding
+/// output is not a display equation, in which case the caller emits a plain
+/// `\label`.
+fn try_label_display_math(ctx: &mut ConvertContext, label: &str) -> bool {
+    let label_cmd = label_to_latex(label);
+    let label_cmd = label_cmd.trim().to_string();
+    let end = ctx.output.trim_end().len();
+
+    if ctx.output[..end].ends_with("\\]") {
+        let Some(open) = ctx.output[..end].rfind("\\[") else {
+            return false;
+        };
+        let inner = ctx.output[open + 2..end - 2].trim().to_string();
+        ctx.output.truncate(open);
+        ctx.output.push_str(&format!(
+            "\\begin{{equation}}\n{inner}\n{label_cmd}\n\\end{{equation}}"
+        ));
+        return true;
+    }
+
+    if ctx.output[..end].ends_with("\\end{algorithm}") {
+        let Some(start) = ctx.output[..end].rfind("\\begin{algorithm}") else {
+            return false;
+        };
+        // Insert the label just after the \caption{...} line, or right after
+        // \begin{algorithm} if there is no caption.
+        let insert_at = match ctx.output[start..end].find("\\caption{") {
+            Some(cap) => {
+                let abs = start + cap;
+                ctx.output[abs..end]
+                    .find('\n')
+                    .map(|nl| abs + nl + 1)
+                    .unwrap_or(end)
+            }
+            None => start + "\\begin{algorithm}\n".len(),
+        };
+        ctx.output.insert_str(insert_at, &format!("{label_cmd}\n"));
+        return true;
+    }
+
+    if ctx.output[..end].ends_with("\\end{align}") {
+        let Some(open) = ctx.output[..end].rfind("\\begin{align}") else {
+            return false;
+        };
+        let inner_start = open + "\\begin{align}".len();
+        let inner_end = end - "\\end{align}".len();
+        let body = normalize_aligned_linebreaks(ctx.output[inner_start..inner_end].trim());
+        ctx.output.truncate(open);
+        ctx.output.push_str(&format!(
+            "\\begin{{equation}}\n\\begin{{aligned}}\n{body}\n\\end{{aligned}}\n{label_cmd}\n\\end{{equation}}"
+        ));
+        return true;
+    }
+
+    false
+}
+
+/// Normalize a multiline math body for `aligned`:
+/// 1. Typst line breaks arrive as a single trailing backslash; `aligned` needs
+///    `\\`, so double any lone trailing backslash (the final line carries none).
+/// 2. `\left…`/`\right…` cannot be balanced across a `\\` line break. Replace the
+///    pairs that span lines in these documents (set-builder braces and brackets)
+///    with delimiters that do not require balancing.
+fn normalize_aligned_linebreaks(s: &str) -> String {
+    let body = s
+        .lines()
+        .map(|line| {
+            let t = line.trim_end();
+            if t.ends_with('\\') && !t.ends_with("\\\\") {
+                format!("{t}\\")
+            } else {
+                t.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    body.replace("\\left\\{", "\\{")
+        .replace("\\right\\}", "\\}")
+        .replace("\\left[", "\\bigl[")
+        .replace("\\right]", "\\bigr]")
+        .replace("\\left(", "\\bigl(")
+        .replace("\\right)", "\\bigr)")
+        .replace("\\left|", "\\bigl|")
+        .replace("\\right|", "\\bigr|")
+}
+
+/// Collect every label *defined* in the document (`<label>` markers, on
+/// equations, figures, headings, etc.). A Typst `@key` reference is a genuine
+/// cross-reference when its target is one of these labels, and a bibliography
+/// citation otherwise — that is how we disambiguate `\ref` from `\cite` with no
+/// flags and without reading the `.bib`.
+pub fn collect_defined_labels(nodes: &[ContentNode], out: &mut Vec<String>) {
+    for node in nodes {
+        match node {
+            ContentNode::Label(label) | ContentNode::LabelDef(label) => {
+                let label = label.trim().trim_start_matches('<').trim_end_matches('>').trim();
+                if !label.is_empty() && !out.iter().any(|l| l == label) {
+                    out.push(label.to_string());
+                }
+            }
+            ContentNode::Strong(content)
+            | ContentNode::Emph(content)
+            | ContentNode::ListItem(content) => collect_defined_labels(content, out),
+            ContentNode::Heading { content, .. } | ContentNode::EnumItem { content, .. } => {
+                collect_defined_labels(content, out)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Same as [`collect_defined_labels`] but over a parsed syntax tree, used on the
+/// fallback (non-eval) conversion path.
+pub fn collect_tree_labels(node: &SyntaxNode, out: &mut Vec<String>) {
+    if node.kind() == SyntaxKind::Label {
+        let label = normalize_label_like_text(&node.text().to_string());
+        if !label.is_empty() && !out.iter().any(|l| l == &label) {
+            out.push(label);
+        }
+    }
+    for child in node.children() {
+        collect_tree_labels(child, out);
+    }
+}
+
+/// Emit a `@target` reference as either a cross-reference or a citation,
+/// depending on whether `target` is a label defined in this document.
+fn emit_reference_or_citation(ctx: &mut ConvertContext, target: &str, ref_type: ReferenceType) {
+    if ctx.labels.iter().any(|l| l == target) {
+        ctx.push(&reference_to_latex(&Reference {
+            target: target.to_string(),
+            ref_type,
+        }));
+    } else {
+        let mut group = CiteGroup::new();
+        group.push(Citation::new(target.to_string()));
+        ctx.push(&citation_to_latex(&group));
+    }
+    ctx.last_token = TokenType::Command;
+}
+
 pub fn convert_content_nodes_to_latex(nodes: &[ContentNode], ctx: &mut ConvertContext) {
     let mut buffer = String::new();
 
@@ -192,15 +338,13 @@ pub fn convert_content_nodes_to_latex(nodes: &[ContentNode], ctx: &mut ConvertCo
             }
             ContentNode::Reference { target, ref_type } => {
                 flush_typst_chunk(&mut buffer, ctx);
-                ctx.push(&reference_to_latex(&Reference {
-                    target: target.clone(),
-                    ref_type: *ref_type,
-                }));
-                ctx.last_token = TokenType::Command;
+                emit_reference_or_citation(ctx, target, *ref_type);
             }
             ContentNode::LabelDef(label) => {
                 flush_typst_chunk(&mut buffer, ctx);
-                ctx.push(&label_to_latex(label));
+                if !try_label_display_math(ctx, label) {
+                    ctx.push(&label_to_latex(label));
+                }
                 ctx.last_token = TokenType::Command;
             }
             ContentNode::Bibliography { file, style } => {
@@ -222,6 +366,15 @@ pub fn convert_content_nodes_to_latex(nodes: &[ContentNode], ctx: &mut ConvertCo
                 let math_source = render_math_segments_to_typst_source(segments);
                 let math_content = convert_math_source_to_latex(&math_source, &ctx.options);
                 emit_rendered_math(ctx, &math_content, *block);
+            }
+            // A `~` shorthand resolves to a lone non-breaking space; emit it as a
+            // LaTeX `~` directly. Routing it through the text buffer would let the
+            // re-parse normalise it to ordinary whitespace and drop it before a
+            // following command (e.g. `Section~@ref`).
+            ContentNode::Text(t) if t.contains('\u{00A0}') => {
+                flush_typst_chunk(&mut buffer, ctx);
+                ctx.push(&escape_latex_text(t));
+                ctx.last_token = TokenType::Text;
             }
             other => buffer.push_str(&other.to_typst()),
         }
@@ -416,6 +569,44 @@ pub fn convert_markup_node(node: &SyntaxNode, ctx: &mut ConvertContext) {
             }
         }
 
+        // Typst smart quotes (' and ") were previously dropped, which silently
+        // deleted every possessive/contraction apostrophe. Resolve each to the
+        // right LaTeX quote: a quote that follows a non-space character is a
+        // closing quote (this is the possessive/contraction case, e.g.
+        // `harvester's`); otherwise it opens.
+        SyntaxKind::SmartQuote => {
+            let double = node.text().contains('"');
+            let closing = ctx
+                .output
+                .chars()
+                .last()
+                .map(|c| !c.is_whitespace())
+                .unwrap_or(false);
+            let rendered = match (double, closing) {
+                (false, false) => "`",
+                (false, true) => "'",
+                (true, false) => "``",
+                (true, true) => "''",
+            };
+            ctx.push(rendered);
+            ctx.last_token = TokenType::Text;
+        }
+
+        // Typst shorthands (`~`, `--`, `---`, `...`) were dropped on this path;
+        // map them to their LaTeX equivalents. `~` is the important one — losing
+        // it glues a following command, e.g. `Section~@ref` -> `Section\ref`.
+        SyntaxKind::Shorthand => {
+            let rendered = match node.text().as_str() {
+                "~" => "~",
+                "..." => "\\dots{}",
+                "--" => "--",
+                "---" => "---",
+                other => other,
+            };
+            ctx.push(rendered);
+            ctx.last_token = TokenType::Text;
+        }
+
         // Escape sequences: \$, \#, \%, etc.
         SyntaxKind::Escape => {
             let text = node.text().to_string();
@@ -464,12 +655,17 @@ pub fn convert_markup_node(node: &SyntaxNode, ctx: &mut ConvertContext) {
             ctx.push(section_cmd);
             ctx.push("{");
 
-            // Get heading content
+            // Get heading content. The space between the `=` marker and the
+            // title is a Space node; rendering it verbatim would yield
+            // `\section{ Title}`, so trim the rendered content in place.
+            let content_start = ctx.output.len();
             for child in node.children() {
                 if child.kind() != SyntaxKind::HeadingMarker {
                     convert_markup_node(child, ctx);
                 }
             }
+            let content = ctx.output.split_off(content_start);
+            ctx.output.push_str(content.trim());
 
             ctx.push("}\n");
             ctx.last_token = TokenType::Newline;
@@ -649,8 +845,7 @@ pub fn convert_markup_node(node: &SyntaxNode, ctx: &mut ConvertContext) {
             let text = get_simple_text(node);
             let label = text.trim_start_matches('@').trim();
             if !label.is_empty() {
-                ctx.push(&reference_to_latex(&Reference::new(label.to_string())));
-                ctx.last_token = TokenType::Command;
+                emit_reference_or_citation(ctx, label, ReferenceType::Basic);
             }
         }
 
@@ -659,7 +854,9 @@ pub fn convert_markup_node(node: &SyntaxNode, ctx: &mut ConvertContext) {
             let text = node.text().to_string();
             let label = normalize_label_like_text(&text);
             if !label.is_empty() {
-                ctx.push(&label_to_latex(&label));
+                if !try_label_display_math(ctx, &label) {
+                    ctx.push(&label_to_latex(&label));
+                }
                 ctx.last_token = TokenType::Command;
             }
         }
@@ -785,7 +982,11 @@ fn handle_special_markup_func(func_name: &str, children: &[&SyntaxNode], ctx: &m
         }
 
         "figure" => {
-            convert_figure_to_latex(children, ctx);
+            if figure_is_algorithm(children) {
+                convert_algorithm_to_latex(children, ctx);
+            } else {
+                convert_figure_to_latex(children, ctx);
+            }
         }
 
         "link" => {
@@ -1699,36 +1900,355 @@ fn convert_figure_to_latex(children: &[&SyntaxNode], ctx: &mut ConvertContext) {
 
     ctx.ensure_paragraph_break();
     let env_name = if is_table { "table" } else { "figure" };
-    ctx.push_line(&format!("\\begin{{{}}}[htbp]", env_name));
-    ctx.push_line("\\centering");
 
+    let caption_block = caption.map(|cap| {
+        // Clean up caption: remove escaped braces from [{...}] pattern
+        let clean = cap
+            .trim()
+            .trim_start_matches("\\{")
+            .trim_end_matches("\\}")
+            .trim()
+            .to_string();
+        format!("  \\caption{{{clean}}}\n")
+    });
+    let label_block = label
+        .or_else(|| ctx.pending_label.clone())
+        .map(|lbl| {
+            format!(
+                "  \\label{{{}}}\n",
+                lbl.trim_start_matches('<').trim_end_matches('>')
+            )
+        });
+
+    ctx.push_line(&format!("\\begin{{{env_name}}}[htbp]"));
+
+    // Convention: table captions sit above the tabular, figure captions below.
+    if is_table {
+        if let Some(cap) = &caption_block {
+            ctx.push(cap);
+        }
+        if let Some(lbl) = &label_block {
+            ctx.push(lbl);
+        }
+    }
+
+    ctx.push_line("\\centering");
     if !content.is_empty() {
         ctx.push("  ");
         ctx.push(&content);
         ctx.newline();
     }
 
+    if !is_table {
+        if let Some(cap) = &caption_block {
+            ctx.push(cap);
+        }
+        if let Some(lbl) = &label_block {
+            ctx.push(lbl);
+        }
+    }
+
+    ctx.push_line(&format!("\\end{{{env_name}}}"));
+}
+
+// ============================================================================
+// Algorithm Conversion (lovelace pseudocode-list -> algorithmic)
+// ============================================================================
+
+/// Name of the function a `FuncCall` node invokes (first child ident).
+fn func_call_name(node: &SyntaxNode) -> String {
+    node.children()
+        .next()
+        .map(|n| n.text().to_string())
+        .unwrap_or_default()
+}
+
+/// True if a `#figure(...)` is a lovelace algorithm: `kind: "algorithm"` or it
+/// wraps a `pseudocode-list(...)`.
+fn figure_is_algorithm(children: &[&SyntaxNode]) -> bool {
+    let Some(args) = children.get(1) else {
+        return false;
+    };
+    for child in args.children() {
+        match child.kind() {
+            SyntaxKind::Named => {
+                let nc: Vec<_> = child.children().collect();
+                if nc.first().map(|n| n.text().to_string()).as_deref() == Some("kind")
+                    && child
+                        .children()
+                        .any(|n| n.kind() == SyntaxKind::Str && n.text().contains("algorithm"))
+                {
+                    return true;
+                }
+            }
+            SyntaxKind::FuncCall => {
+                if func_call_name(child) == "pseudocode-list" {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn convert_algorithm_to_latex(children: &[&SyntaxNode], ctx: &mut ConvertContext) {
+    let mut caption: Option<String> = None;
+    let mut pseudo_markup: Option<SyntaxNode> = None;
+
+    if let Some(args) = children.get(1) {
+        for child in args.children() {
+            match child.kind() {
+                SyntaxKind::Named => {
+                    let nc: Vec<_> = child.children().collect();
+                    if nc.first().map(|n| n.text().to_string()).as_deref() == Some("caption") {
+                        if let Some(value) = nc.iter().find(|n| {
+                            !matches!(
+                                n.kind(),
+                                SyntaxKind::Ident | SyntaxKind::Colon | SyntaxKind::Space
+                            )
+                        }) {
+                            let mut cap_ctx = child_context(ctx);
+                            convert_markup_node(value, &mut cap_ctx);
+                            caption = Some(cap_ctx.finalize().trim().to_string());
+                        }
+                    }
+                }
+                SyntaxKind::FuncCall if func_call_name(child) == "pseudocode-list" => {
+                    pseudo_markup = find_content_markup(child);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let label = ctx
+        .pending_label
+        .take()
+        .map(|l| l.trim_start_matches('<').trim_end_matches('>').to_string());
+
+    let mut lines = Vec::new();
+    if let Some(markup) = &pseudo_markup {
+        collect_pseudocode_lines(markup, ctx, &mut lines);
+    }
+
+    ctx.ensure_paragraph_break();
+    ctx.push_line("\\begin{algorithm}");
     if let Some(cap) = caption {
-        // Clean up caption: remove escaped braces from [{...}] pattern
-        let clean_cap = cap
-            .trim()
-            .trim_start_matches("\\{")
-            .trim_end_matches("\\}")
-            .trim();
-        ctx.push("  \\caption{");
-        ctx.push(clean_cap);
-        ctx.push("}\n");
+        ctx.push_line(&format!("\\caption{{{cap}}}"));
+    }
+    if let Some(lbl) = label {
+        ctx.push_line(&format!("\\label{{{lbl}}}"));
+    }
+    ctx.push_line("\\begin{algorithmic}[1]");
+    for line in lines {
+        ctx.push_line(&line);
+    }
+    ctx.push_line("\\end{algorithmic}");
+    ctx.push_line("\\end{algorithm}");
+    ctx.last_token = TokenType::Newline;
+}
+
+/// A fresh context that inherits options and the document's label set.
+fn child_context(ctx: &ConvertContext) -> ConvertContext {
+    let mut child = ConvertContext::new();
+    child.options = ctx.options.clone();
+    child.labels = ctx.labels.clone();
+    child
+}
+
+/// Descend a `pseudocode-list(...)` FuncCall to the `Markup` inside its content
+/// block argument.
+fn find_content_markup(func_call: &SyntaxNode) -> Option<SyntaxNode> {
+    let args = func_call
+        .children()
+        .find(|n| n.kind() == SyntaxKind::Args)?;
+    let block = args
+        .children()
+        .find(|n| n.kind() == SyntaxKind::ContentBlock)?;
+    block
+        .children()
+        .find(|n| n.kind() == SyntaxKind::Markup)
+        .cloned()
+}
+
+/// Walk the enum items in document order (recursing into nested items, which
+/// lovelace uses for block bodies) and map each to one algorithmic line.
+fn collect_pseudocode_lines(markup: &SyntaxNode, ctx: &ConvertContext, out: &mut Vec<String>) {
+    for child in markup.children() {
+        if child.kind() == SyntaxKind::EnumItem {
+            if let Some(item_markup) = child.children().find(|n| n.kind() == SyntaxKind::Markup) {
+                let raw = render_item_own_content(item_markup, ctx);
+                if !raw.is_empty() {
+                    out.extend(map_pseudocode_line(&raw));
+                }
+                collect_pseudocode_lines(item_markup, ctx, out);
+            }
+        }
+    }
+}
+
+/// Render an enum item's own content to LaTeX, excluding nested enum items
+/// (those become their own lines).
+fn render_item_own_content(markup: &SyntaxNode, ctx: &ConvertContext) -> String {
+    let mut item_ctx = child_context(ctx);
+    for child in markup.children() {
+        if child.kind() != SyntaxKind::EnumItem {
+            convert_markup_node(child, &mut item_ctx);
+        }
+    }
+    item_ctx.finalize().trim().to_string()
+}
+
+const BOLD_PREFIX: &str = "\\textbf{";
+
+fn between_bold(body: &str, kw1: &str, kw2: &str) -> Option<String> {
+    let open = format!("{BOLD_PREFIX}{kw1}}}");
+    let close = format!("{BOLD_PREFIX}{kw2}}}");
+    let inner = body.strip_prefix(&open)?.strip_suffix(&close)?;
+    Some(inner.trim().to_string())
+}
+
+fn starts_bold(body: &str, kw: &str) -> Option<String> {
+    let open = format!("{BOLD_PREFIX}{kw}}}");
+    body.strip_prefix(&open).map(|r| r.trim().to_string())
+}
+
+fn is_bold_only(body: &str, kw: &str) -> bool {
+    body == format!("{BOLD_PREFIX}{kw}}}")
+}
+
+/// Map one rendered pseudocode line to one or more algorithmic commands. The
+/// control keywords arrive as `\textbf{...}` because lovelace writes them as
+/// `*bold*`. A single-line `*if* C *then* B` expands to three lines.
+fn map_pseudocode_line(raw: &str) -> Vec<String> {
+    let (body, comment) = extract_alg_comment(raw);
+    let body = body.trim();
+
+    if let Some(m) = between_bold(body, "while", "do") {
+        return vec![format!("\\While{{{m}}}{comment}")];
+    }
+    if let Some(m) = between_bold(body, "for each", "do") {
+        return vec![format!("\\For{{each {m}}}{comment}")];
+    }
+    if let Some(m) = between_bold(body, "for", "do") {
+        return vec![format!("\\For{{{m}}}{comment}")];
     }
 
-    // Use label from argument, or from pending_label (set by parent when processing figure + <label>)
-    let final_label = label.or_else(|| ctx.pending_label.clone());
-    if let Some(lbl) = final_label {
-        ctx.push("  \\label{");
-        ctx.push(lbl.trim_start_matches('<').trim_end_matches('>'));
-        ctx.push("}\n");
+    // if / else-if, in either block (`... *then*`) or inline (`*then* body`) form.
+    for (kw, cmd) in [("else if", "\\ElsIf"), ("if", "\\If")] {
+        if let Some(rest) = starts_bold(body, kw) {
+            if let Some((cond, after)) = split_before_bold(&rest, "then") {
+                let cond = cond.trim();
+                let after = after.trim();
+                if after.is_empty() {
+                    return vec![format!("{cmd}{{{cond}}}{comment}")];
+                }
+                // Inline conditional: condition, single statement, close.
+                return vec![
+                    format!("{cmd}{{{cond}}}"),
+                    format!("\\State {after}{comment}"),
+                    "\\EndIf".to_string(),
+                ];
+            }
+        }
     }
 
-    ctx.push_line(&format!("\\end{{{}}}", env_name));
+    let single = if is_bold_only(body, "end while") {
+        "\\EndWhile".to_string()
+    } else if is_bold_only(body, "end for") {
+        "\\EndFor".to_string()
+    } else if is_bold_only(body, "end if") {
+        "\\EndIf".to_string()
+    } else if is_bold_only(body, "end procedure") {
+        "\\EndProcedure".to_string()
+    } else if is_bold_only(body, "else") {
+        "\\Else".to_string()
+    } else if is_bold_only(body, "repeat") {
+        "\\Repeat".to_string()
+    } else if let Some(m) = starts_bold(body, "until") {
+        format!("\\Until{{{m}}}")
+    } else if let Some(rest) = starts_bold(body, "procedure") {
+        let (name, args) = split_procedure(&rest);
+        format!("\\Procedure{{{name}}}{{{args}}}")
+    } else if let Some(rest) = starts_bold(body, "return") {
+        format!("\\State \\Return {rest}")
+    } else {
+        format!("\\State {body}")
+    };
+
+    vec![format!("{single}{comment}")]
+}
+
+/// Split `s` at the first `\textbf{kw}`, returning the text before and after it.
+fn split_before_bold(s: &str, kw: &str) -> Option<(String, String)> {
+    let marker = format!("{BOLD_PREFIX}{kw}}}");
+    let pos = s.find(&marker)?;
+    Some((
+        s[..pos].to_string(),
+        s[pos + marker.len()..].to_string(),
+    ))
+}
+
+/// Pull a trailing `#h(1fr) #alg-ref[@label]` (rendered as `\hfill ... \ref{x}`)
+/// off a line and turn it into an algorithmic `\Comment{...}`.
+fn extract_alg_comment(raw: &str) -> (String, String) {
+    let Some(pos) = raw.find("\\hfill") else {
+        return (raw.to_string(), String::new());
+    };
+    let head = raw[..pos].trim_end().to_string();
+    let tail = &raw[pos..];
+    let comment = extract_ref_label(tail)
+        .map(|label| format!(" \\Comment{{{}}}", comment_ref(&label)))
+        .unwrap_or_default();
+    (head, comment)
+}
+
+fn extract_ref_label(s: &str) -> Option<String> {
+    let idx = s.find("\\ref{")?;
+    let rest = &s[idx + "\\ref{".len()..];
+    let end = rest.find('}')?;
+    Some(rest[..end].to_string())
+}
+
+/// Render a cross-reference inside an algorithm comment, with the conventional
+/// `Eq.`/`Alg.`/`Sec.` prefix derived from the label.
+fn comment_ref(label: &str) -> String {
+    let prefix = if label.starts_with("eq-") || label.starts_with("eqn-") {
+        "Eq.~"
+    } else if label.starts_with("alg-") {
+        "Alg.~"
+    } else if label.starts_with("sec-") {
+        "Sec.~"
+    } else if label.starts_with("tab-") || label.starts_with("tbl-") {
+        "Tab.~"
+    } else if label.starts_with("fig-") {
+        "Fig.~"
+    } else {
+        ""
+    };
+    format!("{prefix}\\ref{{{label}}}")
+}
+
+/// Split a procedure header `\textsc{Name}$(args)$` into name and argument text.
+fn split_procedure(rest: &str) -> (String, String) {
+    let rest = rest.trim();
+    if let Some(after) = rest.strip_prefix("\\textsc{") {
+        if let Some(close) = after.find('}') {
+            let name = after[..close].to_string();
+            let mut args = after[close + 1..].trim().to_string();
+            // Strip one layer of \left( ... \right) so the procedure args are not
+            // doubly parenthesised once algpseudocode adds its own.
+            if let Some(inner) = args
+                .strip_prefix("$\\left(")
+                .and_then(|s| s.strip_suffix("\\right)$"))
+            {
+                args = format!("${}$", inner.trim());
+            }
+            return (name, args);
+        }
+    }
+    (rest.to_string(), String::new())
 }
 
 // ============================================================================

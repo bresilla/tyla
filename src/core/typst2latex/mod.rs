@@ -11,6 +11,7 @@ mod math_emit;
 mod math_ir;
 mod preprocess;
 mod table;
+mod template;
 mod utils;
 
 pub use context::{ConvertContext, DocumentWrapperMode, EnvironmentContext, T2LOptions, TokenType};
@@ -304,6 +305,24 @@ pub fn typst_document_to_latex(input: &str) -> String {
 ///     eprintln!("Warning: {}", warning);
 /// }
 /// ```
+/// Merge directly-adjacent citations, `\cite{a}, \cite{b}` or `\cite{a} \cite{b}`
+/// -> `\cite{a,b}`, matching how `@a, @b` / `@a @b` read in Typst. Only spaces,
+/// tabs and commas may separate the two `\cite` calls (never a newline, so
+/// citations in different sentences/paragraphs are left alone), which keeps the
+/// grouping stable across a LaTeX -> Typst -> LaTeX round-trip.
+fn group_adjacent_citations(input: &str) -> String {
+    use regex::Regex;
+    let re = Regex::new(r"\\cite\{([^}]*)\}[ \t,]+\\cite\{([^}]*)\}").unwrap();
+    let mut output = input.to_string();
+    loop {
+        let merged = re.replace_all(&output, r"\cite{$1,$2}").into_owned();
+        if merged == output {
+            return output;
+        }
+        output = merged;
+    }
+}
+
 pub fn typst_to_latex_with_diagnostics(input: &str, options: &T2LOptions) -> ConversionResult {
     let mut warnings = Vec::new();
 
@@ -328,16 +347,22 @@ pub fn typst_to_latex_with_diagnostics(input: &str, options: &T2LOptions) -> Con
         let root = parse_math(&expanded_input);
         math::convert_math_node(&root, &mut ctx);
     } else if let Some(nodes) = expanded_nodes.as_ref() {
+        // Pre-scan defined labels so `@key` can be split into \ref vs \cite.
+        markup::collect_defined_labels(nodes, &mut ctx.labels);
         markup::convert_content_nodes_to_latex(nodes, &mut ctx);
     } else {
         let root = parse(&expanded_input);
+        markup::collect_tree_labels(&root, &mut ctx.labels);
         markup::convert_markup_node(&root, &mut ctx);
     }
 
-    let mut output = ctx.finalize();
+    let mut output = group_adjacent_citations(&ctx.finalize());
 
     if options.full_document {
-        output = wrap_in_document(&output, options);
+        output = match template::detect_frontmatter(input) {
+            Some(frontmatter) => template::assemble_document(&frontmatter, &output),
+            None => wrap_in_document(&output, options),
+        };
     }
 
     ConversionResult::with_warnings(output, warnings)

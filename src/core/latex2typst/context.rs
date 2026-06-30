@@ -260,6 +260,10 @@ pub struct ConversionState {
     pub author: Option<String>,
     pub date: Option<String>,
     pub document_class: Option<String>,
+    /// Rendered Typst template show rule when an elsarticle/IEEEtran document is
+    /// detected; when set, the generic preamble and front-matter body content
+    /// are suppressed in favour of this.
+    pub template_show_rule: Option<String>,
     /// Collected structured warnings
     pub structured_warnings: Vec<ConversionWarning>,
     /// Legacy string warnings (for compatibility)
@@ -567,6 +571,11 @@ impl LatexConverter {
         //   \begin{verbatim}\begin{document}\end{verbatim}  (inside verbatim - rare edge case)
         self.state.in_preamble = Self::has_real_begin_document(input);
 
+        // Detect a paper template (elsarticle/IEEEtran) and pre-render its show
+        // rule; the front matter is then suppressed in the body walk below.
+        self.state.template_show_rule =
+            super::template::detect_frontmatter(self, input).map(|fm| fm.render_show_rule());
+
         // Preprocess: protect zero-argument commands that MiTeX would otherwise lose
         let protected_input = protect_zero_arg_commands(input);
 
@@ -592,6 +601,19 @@ impl LatexConverter {
     }
 
     /// Convert math-only LaTeX to Typst
+    /// Convert a self-contained LaTeX fragment (mixed text/math) to Typst markup,
+    /// without the document preamble. Used to convert the inner content of
+    /// algorithm lines, table cells, etc.
+    pub fn convert_fragment(&mut self, latex: &str) -> String {
+        let tree = mitex_parser::parse(latex, self.spec.clone());
+        let mut output = String::new();
+        let prev_preamble = self.state.in_preamble;
+        self.state.in_preamble = false;
+        self.visit_node(&tree, &mut output);
+        self.state.in_preamble = prev_preamble;
+        output.trim().to_string()
+    }
+
     pub fn convert_math(&mut self, input: &str) -> String {
         self.state.mode = ConversionMode::Math;
         self.state.in_preamble = false;
@@ -1439,6 +1461,20 @@ impl LatexConverter {
     /// Build the final Typst document
     pub fn build_document(&self, content: String) -> String {
         let mut doc = String::new();
+
+        // A detected paper template replaces the generic preamble, title block,
+        // and document metadata entirely with its show rule.
+        if let Some(rule) = &self.state.template_show_rule {
+            doc.push_str(rule);
+            doc.push_str(&clean_whitespace(&content));
+            if !self.state.warnings.is_empty() {
+                doc.push_str("\n\n// Conversion warnings:\n");
+                for warning in &self.state.warnings {
+                    let _ = writeln!(doc, "// - {}", warning);
+                }
+            }
+            return clean_whitespace(&doc);
+        }
 
         // Document metadata
         if self.state.title.is_some() || self.state.author.is_some() {

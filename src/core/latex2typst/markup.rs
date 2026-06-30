@@ -366,6 +366,15 @@ fn protect_comma(content: &str) -> String {
 }
 
 /// Convert a LaTeX command
+/// True for classes where `\section` is the top sectioning level (`=`). Only
+/// chaptered classes (report/book and friends) demote `\section` to level 2.
+fn is_article_like(class: Option<&str>) -> bool {
+    !matches!(
+        class,
+        Some("report") | Some("book") | Some("memoir") | Some("scrbook") | Some("scrreprt")
+    )
+}
+
 pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &mut String) {
     let node = match &elem {
         SyntaxElement::Node(n) => n.clone(),
@@ -387,6 +396,35 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
 
     // Remove leading backslash for matching
     let base_name = cmd_str.trim_start_matches('\\');
+
+    // A detected paper template emits these from its show rule (relevant for
+    // IEEEtran, whose title/author/maketitle sit at the document top level), and
+    // the class-specific layout commands are noise once the template is in place.
+    if conv.state.template_show_rule.is_some()
+        && matches!(
+            base_name,
+            "title" | "author" | "maketitle" | "ead" | "affiliation" | "cortext"
+                | "IEEEpeerreviewmaketitle" | "biboptions" | "linenumbers" | "hfuzz"
+                | "hbadness" | "emergencystretch" | "bibliographystyle"
+        )
+    {
+        return;
+    }
+
+    // `\bibliographystyle` has no Typst equivalent; drop it (its argument is now
+    // attached, so it is consumed too).
+    if base_name == "bibliographystyle" {
+        return;
+    }
+
+    // Bibliography in the body maps to a Typst `#bibliography(...)` call.
+    if base_name == "bibliography" && !conv.state.in_preamble {
+        if let Some(arg) = conv.get_required_arg(&cmd, 0) {
+            let name = arg.trim().trim_end_matches(".bib");
+            let _ = writeln!(output, "#bibliography(\"{}.bib\")", name);
+        }
+        return;
+    }
 
     // Handle preamble commands
     if conv.state.in_preamble {
@@ -516,7 +554,7 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
         // Sectioning - adjust level based on documentclass
         "section" => {
             // article: section = level 1 (=), report/book: section = level 2 (==)
-            let base_level = if conv.state.document_class.as_deref() == Some("article") {
+            let base_level = if is_article_like(conv.state.document_class.as_deref()) {
                 0
             } else {
                 1
@@ -524,7 +562,7 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
             convert_section(conv, &cmd, base_level, output);
         }
         "subsection" => {
-            let base_level = if conv.state.document_class.as_deref() == Some("article") {
+            let base_level = if is_article_like(conv.state.document_class.as_deref()) {
                 1
             } else {
                 2
@@ -532,7 +570,7 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
             convert_section(conv, &cmd, base_level, output);
         }
         "subsubsection" => {
-            let base_level = if conv.state.document_class.as_deref() == Some("article") {
+            let base_level = if is_article_like(conv.state.document_class.as_deref()) {
                 2
             } else {
                 3
@@ -540,7 +578,7 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
             convert_section(conv, &cmd, base_level, output);
         }
         "paragraph" => {
-            let base_level = if conv.state.document_class.as_deref() == Some("article") {
+            let base_level = if is_article_like(conv.state.document_class.as_deref()) {
                 3
             } else {
                 4
