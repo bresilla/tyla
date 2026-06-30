@@ -1,6 +1,6 @@
 [package]
 name = "tyla"
-version = "0.3.6"
+version = "0.3.8"
 edition = "2021"
 description = "tyla - High-performance bidirectional LaTeX ↔ Typst converter"
 license = "Apache-2.0"

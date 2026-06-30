@@ -7,6 +7,8 @@ PROJECT_VERSION ?= $(or $(PROJECT_VERSION_FROM_CARGO),dev)
 
 CARGO := cargo
 BIN := tyla
+HAS_REL := $(shell command -v git-rel 2>/dev/null)
+TYPE ?= patch
 
 # `make run` converts this file by default. Override with `make run FILE=...`.
 FILE ?= examples/sample.tex
@@ -18,15 +20,28 @@ $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME) v$(PROJECT_VERSION))
 $(info ------------------------------------------)
 
-.PHONY: build b run r demo test t test-all check fmt lint harden bench doc install clean help h
+.PHONY: build b build-release release run r demo test t test-all check fmt lint harden bench doc install clean help h
 
 build:
 	@$(CARGO) build
 
 b: build
 
-release:
+# Optimized build (binary at target/release/$(BIN)).
+build-release:
 	@$(CARGO) build --release
+
+# Cut a new version with git-rel. Usage: make release TYPE=[patch|minor|major|M.m.p]
+release:
+	@if [ -z "$(HAS_REL)" ]; then \
+		echo "git-rel is not installed. Please install it first."; \
+		exit 1; \
+	fi
+	@if [ -z "$(TYPE)" ]; then \
+		echo "Release type not specified. Use 'make release TYPE=[patch|minor|major|M.m.p]'"; \
+		exit 1; \
+	fi
+	@git rel $(TYPE)
 
 # Run the CLI. By default converts FILE (a full LaTeX/Typst document) to stdout.
 #   make run                          # convert examples/sample.tex -> Typst
@@ -88,8 +103,9 @@ help:
 	@echo "Usage: make [target]"
 	@echo
 	@echo "Available targets:"
-	@echo "  build      Build the debug binary"
-	@echo "  release    Build the optimized release binary"
+	@echo "  build         Build the debug binary"
+	@echo "  build-release Build the optimized release binary"
+	@echo "  release       Cut a new version (git-rel) TYPE=[patch|minor|major|M.m.p]"
 	@echo "  run        Run $(BIN) on FILE (default: $(FILE))"
 	@echo "  demo       Convert both bundled examples (LaTeX<->Typst round-trip)"
 	@echo "  test       Run the test suite"
