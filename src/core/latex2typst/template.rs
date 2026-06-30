@@ -67,6 +67,30 @@ fn read_balanced(s: &str) -> Option<(String, usize)> {
     None
 }
 
+/// Remove LaTeX line comments (`%` to end of line, respecting `\%`). Keeps line
+/// breaks so positions and `\begin{...}` matching are unaffected.
+fn strip_latex_comments(src: &str) -> String {
+    src.lines()
+        .map(|line| {
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            let mut cut = line.len();
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => i += 2, // skip an escaped character (e.g. \%)
+                    b'%' => {
+                        cut = i;
+                        break;
+                    }
+                    _ => i += 1,
+                }
+            }
+            &line[..cut.min(line.len())]
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn braced_after<'a>(text: &'a str, marker: &str) -> Option<String> {
     let idx = text.find(marker)?;
     read_balanced(&text[idx + marker.len()..]).map(|(inner, _)| inner)
@@ -85,14 +109,18 @@ fn environment_body(text: &str, name: &str) -> Option<String> {
 
 /// Detect an `elsarticle`/`IEEEtran` document and extract its front matter,
 /// converting LaTeX fragments to Typst eagerly (needs `&mut conv`).
-pub fn detect_frontmatter(conv: &mut LatexConverter, src: &str) -> Option<Frontmatter> {
+pub fn detect_frontmatter(conv: &mut LatexConverter, raw: &str) -> Option<Frontmatter> {
     let class_re = Regex::new(r"\\documentclass(?:\[[^\]]*\])?\{([^}]+)\}").ok()?;
-    let class = class_re.captures(src)?.get(1)?.as_str().trim().to_string();
+    let class = class_re.captures(raw)?.get(1)?.as_str().trim().to_string();
     let kind = match class.as_str() {
         "elsarticle" => TemplateKind::Elsarticle,
         "IEEEtran" => TemplateKind::Ieee,
         _ => return None,
     };
+
+    // Parse from a comment-stripped copy so commented-out example authors,
+    // affiliations, and `%% keywords` lines do not leak into the front matter.
+    let src = &strip_latex_comments(raw);
 
     let title = braced_after(src, "\\title")
         .map(|t| conv.convert_fragment(&t))
@@ -164,6 +192,11 @@ fn parse_elsarticle(
         let next_author = author_re.find(tail).map(|mm| mm.start()).unwrap_or(tail.len());
         let email = braced_after(&tail[..next_author], "\\ead");
 
+        search_from = after;
+        if name.trim().is_empty() {
+            continue; // empty placeholder author
+        }
+
         let affiliations = affs_raw
             .split(',')
             .map(|s| s.trim().to_string())
@@ -178,7 +211,6 @@ fn parse_elsarticle(
             organization: None,
             location: None,
         });
-        search_from = after;
     }
 
     // \affiliation[id]{organization={ORG}, country={COUNTRY}}  (or plain text)
@@ -229,6 +261,10 @@ fn parse_ieee(
             let Some(name) = braced_after(chunk, "\\IEEEauthorblockN") else {
                 continue;
             };
+            let name = conv.convert_fragment(name.trim());
+            if name.is_empty() {
+                continue;
+            }
             let info = braced_after(chunk, "\\IEEEauthorblockA").unwrap_or_default();
             let mut parts = info
                 .split("\\\\")
@@ -238,7 +274,7 @@ fn parse_ieee(
             let location = parts.next().map(|p| conv.convert_fragment(p));
             let email = parts.next().map(|p| p.to_string());
             authors.push(Author {
-                name: conv.convert_fragment(name.trim()),
+                name,
                 email,
                 corresponding: false,
                 affiliations: Vec::new(),

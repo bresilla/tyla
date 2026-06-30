@@ -218,3 +218,91 @@ fn l2t_bibliography_becomes_typst_call() {
     assert!(out.contains("#bibliography(\"references.bib\")"), "got: {out}");
     assert!(!out.contains("bibliographystyle"), "leaked style: {out}");
 }
+
+// ---- regressions found by the public-template corpus ----
+
+#[test]
+fn l2t_starred_section_does_not_leak_star() {
+    let out = run(&["-d", "l2t", "--no-preamble"], "\\section*{Acknowledgment}\nText.");
+    assert!(out.contains("Acknowledgment"), "got: {out}");
+    assert!(!out.contains("= *"), "star leaked as bold marker: {out}");
+    assert!(out.contains("numbering: none"), "starred section should be unnumbered: {out}");
+}
+
+#[test]
+fn l2t_nonumber_is_dropped() {
+    let out = run(
+        &["-d", "l2t", "--no-preamble"],
+        "\\begin{align}\nx &= y \\nonumber\\\\\nz &= w\n\\end{align}",
+    );
+    assert!(!out.contains("nonumber"), "nonumber leaked: {out}");
+}
+
+#[test]
+fn t2l_bibliography_from_template_arg() {
+    // charged-ieee passes the bib as a template argument, not a body call.
+    let src = "#import \"@preview/charged-ieee:0.1.3\": ieee\n\
+        #show: ieee.with(title: [T], authors: ((name: \"A\", organization: [O], location: [L], email: \"a@b.c\"),), \
+        abstract: [x], index-terms: (\"k\",), bibliography: bibliography(\"refs.bib\"))\n\n= Intro\nBody @key.";
+    let out = run(&["-d", "t2l", "-f"], src);
+    assert!(out.contains("\\bibliography{refs}"), "wrong bib file: {out}");
+}
+
+#[test]
+fn l2t_lstlisting_parses_options_and_keeps_code_raw() {
+    let src = "\\begin{lstlisting}[language=Python, caption={Demo}, label={lst:x}]\n\
+        def f(x): return x < 10\n\\end{lstlisting}";
+    let out = run(&["-d", "l2t", "--no-preamble"], src);
+    assert!(out.contains("```python"), "language not applied: {out}");
+    assert!(out.contains("caption: [Demo]"), "caption not parsed: {out}");
+    assert!(out.contains("<lst-x>"), "label not parsed: {out}");
+    // angle brackets in code must stay raw, not parse as a Typst label
+    let xml = run(
+        &["-d", "l2t", "--no-preamble"],
+        "\\begin{lstlisting}\n<tag attr=\"x\">y</tag>\n\\end{lstlisting}",
+    );
+    assert!(xml.contains("<tag attr=\"x\">y</tag>"), "code not raw: {xml}");
+}
+
+#[test]
+fn l2t_literal_at_is_escaped() {
+    // Emails are everywhere in AI/robotics papers; `@host` must not become a ref.
+    let out = run(&["-d", "l2t", "--no-preamble"], "contact foo@bar.com today");
+    assert!(out.contains("foo\\@bar.com"), "got: {out}");
+    let href = run(
+        &["-d", "l2t", "--no-preamble"],
+        "\\href{mailto:a@b.io}{a@b.io}",
+    );
+    assert!(href.contains("a\\@b.io"), "href display not escaped: {href}");
+}
+
+#[test]
+fn l2t_text_backtick_quotes_are_converted() {
+    // LaTeX ``quoted'' / `q' use backticks that would open a Typst raw block.
+    let out = run(&["-d", "l2t", "--no-preamble"], "the ``best'' and `good' ones");
+    assert!(!out.contains('`'), "raw backtick survived: {out}");
+}
+
+#[test]
+fn t2l_non_template_drops_import_and_show() {
+    // A non-elsarticle/ieee Typst doc must not leak its #import/#show lines.
+    let src = "#import \"@preview/some-template:1.0.0\": *\n\
+        #show: some-template.with(title: \"X\")\n\n= Intro\nBody text.";
+    let out = run(&["-d", "t2l", "-f"], src);
+    assert!(!out.contains("@preview"), "import leaked: {out}");
+    assert!(!out.contains("some-template"), "show rule leaked: {out}");
+    assert!(out.contains(r"\section{Intro}"), "body lost: {out}");
+}
+
+#[test]
+fn l2t_commented_out_frontmatter_is_ignored() {
+    // A commented example author must not leak into the show rule.
+    let src = "\\documentclass{elsarticle}\n\
+        %% \\author[x]{Ghost Author}\n\
+        \\begin{document}\n\\begin{frontmatter}\n\\title{Real Title}\n\
+        \\author[a]{Real Name}\n\\affiliation[a]{organization={Uni}, country={Land}}\n\
+        \\begin{abstract}\nA.\n\\end{abstract}\n\\end{frontmatter}\n\\section{S}\nx\n\\end{document}";
+    let out = run(&["-d", "l2t"], src);
+    assert!(out.contains("name: [Real Name]"), "got: {out}");
+    assert!(!out.contains("Ghost Author"), "commented author leaked: {out}");
+}

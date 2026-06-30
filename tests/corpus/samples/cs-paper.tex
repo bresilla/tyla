@@ -1,0 +1,45 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath,amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{amsthm}
+\newtheorem{theorem}{Theorem}
+\begin{document}
+\title{A Fast Algorithm for Widget Sorting}
+\author{\IEEEauthorblockN{Ada Lovelace}\IEEEauthorblockA{Analytical Engine Lab\\London, UK\\ada@engine.org}}
+\maketitle
+\begin{abstract}
+We present an $O(n \log n)$ algorithm for sorting widgets, improving on the naive $O(n^2)$ baseline \cite{knuth1998}.
+\end{abstract}
+\begin{IEEEkeywords}
+sorting, algorithms, complexity
+\end{IEEEkeywords}
+\section{Introduction}
+Sorting is fundamental \cite{cormen2009, knuth1998}. We show the bound in Section~\ref{sec:analysis}.
+\section{Algorithm}
+\begin{algorithm}
+\caption{WidgetSort}\label{alg:sort}
+\begin{algorithmic}[1]
+\Procedure{Sort}{$A$}
+  \If{$|A| \leq 1$} \State \Return $A$ \EndIf
+  \State pivot $\gets A[0]$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+Here is the core loop:
+\begin{lstlisting}[language=Python, caption={Partition step}, label={lst:part}]
+def partition(a, lo, hi):
+    p = a[hi]
+    return [x for x in a if x < p]
+\end{lstlisting}
+\section{Analysis}\label{sec:analysis}
+\begin{theorem}
+WidgetSort runs in $O(n \log n)$ time.
+\end{theorem}
+\begin{proof}
+The recurrence $T(n) = 2T(n/2) + O(n)$ solves to $O(n \log n)$.
+\end{proof}
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+\end{document}

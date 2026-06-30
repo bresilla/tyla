@@ -77,11 +77,7 @@ pub fn convert_environment(conv: &mut LatexConverter, elem: SyntaxElement, outpu
             output.push('\n');
         }
         "description" => {
-            conv.state.push_env(EnvironmentContext::Description);
-            output.push('\n');
-            conv.visit_env_content(&node, output);
-            conv.state.pop_env();
-            output.push('\n');
+            convert_description(conv, &node, output);
         }
 
         // Math environments
@@ -712,14 +708,24 @@ fn convert_verbatim(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut S
 
 /// Convert an lstlisting environment
 fn convert_lstlisting(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut String) {
-    // Parse options using CodeBlockOptions
-    let options_str = conv.get_env_optional_arg(node).unwrap_or_default();
+    let mut options_str = conv.get_env_optional_arg(node).unwrap_or_default();
+    let mut content = conv.extract_env_raw_content(node);
+
+    // mitex frequently leaves the `[options]` glued to the front of the verbatim
+    // content. Split it off so the code stays raw (angle brackets etc. are not
+    // parsed as Typst labels) and the caption/label/language are honoured.
+    let stripped = content.trim_start();
+    if let Some(after) = stripped.strip_prefix('[') {
+        if let Some((inner, used)) = read_bracketed(after) {
+            if options_str.trim().is_empty() {
+                options_str = inner;
+            }
+            content = after[used..].to_string();
+        }
+    }
+
     let options = CodeBlockOptions::parse(&options_str);
-
-    // Get Typst language identifier
     let lang = options.get_typst_language();
-
-    let content = conv.extract_env_raw_content(node);
 
     // If there's a caption, wrap in figure
     if let Some(ref caption) = options.caption {
@@ -1006,6 +1012,55 @@ fn convert_subfigure(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut 
 }
 
 /// Convert an algorithm environment
+/// Convert a `description` list. mitex strips the `\item[label]` bracket into a
+/// bare text run and does not mark it optional, so the optional argument is lost
+/// on the node path. Parse the raw content instead: each `\item[Term] body`
+/// becomes Typst `/ Term: body`. An item without a label degrades to a bullet.
+fn convert_description(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut String) {
+    let raw = conv.extract_env_raw_content(node);
+    output.push('\n');
+    for item in raw.split("\\item").skip(1) {
+        let item = item.trim_start();
+        let (term, body) = match item.strip_prefix('[') {
+            Some(rest) => match read_bracketed(rest) {
+                Some((label, used)) => (Some(label), rest[used..].trim()),
+                None => (None, item),
+            },
+            None => (None, item),
+        };
+        let body = conv.convert_fragment(body);
+        match term {
+            Some(t) => {
+                let term = conv.convert_fragment(&t);
+                let _ = writeln!(output, "/ {}: {}", term.trim(), body.trim());
+            }
+            None => {
+                let _ = writeln!(output, "- {}", body.trim());
+            }
+        }
+    }
+    output.push('\n');
+}
+
+/// Read a balanced `[...]` (the leading `[` already stripped). Returns the inner
+/// text and the offset just past the closing `]` in the original `rest`.
+fn read_bracketed(rest: &str) -> Option<(String, usize)> {
+    let mut depth = 1usize;
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((rest[..i].to_string(), i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn convert_algorithm(conv: &mut LatexConverter, node: &SyntaxNode, output: &mut String) {
     let raw = conv.extract_env_raw_content(node);
 

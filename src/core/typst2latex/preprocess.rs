@@ -671,7 +671,52 @@ fn extract_params_from_node(params_node: &SyntaxNode, params: &mut Vec<String>) 
 }
 
 /// Preprocess Typst source: extract definitions and expand using AST
+/// Remove Typst-only directives (`#import`, `#show:`, `#set`) that have no LaTeX
+/// meaning. Used on the fallback conversion path so they do not leak as text
+/// when full evaluation is unavailable. Multi-line statements (an unbalanced
+/// open bracket) are skipped through to their close.
+pub fn strip_typst_directives(src: &str) -> String {
+    fn bracket_delta(s: &str) -> i32 {
+        s.chars().fold(0, |acc, c| {
+            acc + match c {
+                '(' | '[' | '{' => 1,
+                ')' | ']' | '}' => -1,
+                _ => 0,
+            }
+        })
+    }
+
+    let mut out: Vec<&str> = Vec::new();
+    let mut depth = 0i32;
+    for line in src.lines() {
+        if depth > 0 {
+            depth += bracket_delta(line);
+            depth = depth.max(0);
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // Mutation statements (`#x.insert(...)`, `.push`, `.update`, …) are pure
+        // side effects that produce no document content.
+        let is_mutation = trimmed.starts_with('#')
+            && [".insert(", ".push(", ".update(", ".remove(", ".add("]
+                .iter()
+                .any(|m| trimmed.contains(m));
+        if trimmed.starts_with("#import ")
+            || trimmed.starts_with("#show:")
+            || trimmed.starts_with("#show ")
+            || trimmed.starts_with("#set ")
+            || is_mutation
+        {
+            depth = bracket_delta(line).max(0);
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
 pub fn preprocess_typst(input: &str) -> String {
+    let input = &strip_typst_directives(input);
     // Step 1: Extract definitions
     let (db, cleaned) = extract_let_from_ast(input);
 

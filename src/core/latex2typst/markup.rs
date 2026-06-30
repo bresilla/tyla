@@ -19,7 +19,7 @@ use mitex_spec::CommandSpecItem;
 
 use super::context::{
     ConversionMode, EnvironmentContext, LatexConverter, MacroDef, PendingCitation, PendingOperator,
-    PendingReference,
+    PendingReference, PendingSection,
 };
 use super::utils::{contains_top_level_separator, sanitize_label, to_roman_numeral};
 use crate::features::images::ImageAttributes;
@@ -285,6 +285,15 @@ pub fn convert_command_sym(conv: &mut LatexConverter, elem: SyntaxElement, outpu
             return;
         }
 
+        // LaTeX no-ops with no Typst equivalent: drop silently rather than
+        // leaking the bare name (which Typst reads as an undefined variable).
+        if matches!(
+            cmd_name,
+            "nonumber" | "notag" | "protect" | "relax" | "noindent" | "samepage"
+        ) {
+            return;
+        }
+
         // Try symbol maps
         if let Some(typst) = lookup_symbol(cmd_name) {
             output.push_str(typst);
@@ -396,6 +405,15 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
 
     // Remove leading backslash for matching
     let base_name = cmd_str.trim_start_matches('\\');
+
+    // LaTeX no-ops with no Typst equivalent (also reached as commands inside
+    // math/align). Drop them instead of leaking the bare name.
+    if matches!(
+        base_name,
+        "nonumber" | "notag" | "protect" | "relax" | "noindent" | "samepage"
+    ) {
+        return;
+    }
 
     // A detected paper template emits these from its show rule (relevant for
     // IEEEtran, whose title/author/maketitle sit at the document top level), and
@@ -686,7 +704,12 @@ pub fn convert_command(conv: &mut LatexConverter, elem: SyntaxElement, output: &
         }
         "href" => {
             let url = conv.get_required_arg(&cmd, 0).unwrap_or_default();
-            let text = conv.get_required_arg(&cmd, 1).unwrap_or_else(|| url.clone());
+            // Convert the display text so special characters (notably `@` in an
+            // email) are escaped; the URL stays raw inside the string.
+            let text = conv
+                .convert_required_arg(&cmd, 1)
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| url.clone());
             let _ = write!(output, "#link(\"{}\")[{}]", url, text);
         }
         "hyperref" => {
@@ -3174,8 +3197,27 @@ fn apply_cedilla(content: &str) -> String {
 
 /// Convert section heading with proper level
 fn convert_section(conv: &mut LatexConverter, cmd: &CmdItem, level: u8, output: &mut String) {
-    if let Some(title) = conv.get_required_arg(cmd, 0) {
-        output.push('\n');
+    let mut title = conv.get_required_arg(cmd, 0).unwrap_or_default();
+    // `\section*{...}`: mitex parses the star as the first argument. The real
+    // title may be a second argument or — more often — the next curly sibling,
+    // which we capture via a pending section. Starred sections are unnumbered.
+    let starred = title.trim() == "*";
+    if starred {
+        match conv.get_required_arg(cmd, 1) {
+            Some(t) if !t.trim().is_empty() => title = t,
+            _ => {
+                conv.state.pending_section = Some(PendingSection { level });
+                return;
+            }
+        }
+    }
+    if title.is_empty() {
+        return;
+    }
+    output.push('\n');
+    if starred {
+        let _ = write!(output, "#heading(level: {}, numbering: none)[{title}]\n", level + 1);
+    } else {
         for _ in 0..=level {
             output.push('=');
         }

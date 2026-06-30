@@ -476,10 +476,15 @@ impl MiniEval {
             // ================================================================
             // Passthrough (unevaluated, preserved as raw source)
             // ================================================================
-            ast::Expr::SetRule(_)
-            | ast::Expr::ShowRule(_)
-            | ast::Expr::Contextual(_)
-            | ast::Expr::DestructAssignment(_) => self.passthrough_expr(&expr),
+            // Set/show rules are Typst-only styling with no LaTeX equivalent.
+            // Drop them rather than leaking their source. Recognised paper
+            // templates are detected separately from the raw source, so this
+            // does not affect front-matter extraction.
+            ast::Expr::SetRule(_) | ast::Expr::ShowRule(_) => Ok(Value::None),
+
+            ast::Expr::Contextual(_) | ast::Expr::DestructAssignment(_) => {
+                self.passthrough_expr(&expr)
+            }
 
             // Fallback for any unhandled expression types
             _ => self.passthrough_expr(&expr),
@@ -615,6 +620,12 @@ impl MiniEval {
         let source_expr = import.source();
         let source_val = self.eval_expr(source_expr)?;
         let path = source_val.as_str()?;
+
+        // Imports of `@preview`/`@local` packages cannot be resolved (and have no
+        // LaTeX meaning); drop them silently instead of leaking the source.
+        if path.starts_with('@') {
+            return Ok(Value::None);
+        }
 
         let current_dir = if let Some(cf) = &self.current_file {
             std::path::Path::new(cf)

@@ -1633,7 +1633,7 @@ impl ContentNode {
                     };
                     format!("@{}", target)
                 }
-                ReferenceType::Page => format!("#locate(loc => {{@{}.page()}})", target),
+                ReferenceType::Page => format!("#context counter(page).at(label(\"{}\")).first()", target),
                 _ => format!("#ref(<{}>)", target),
             },
             ContentNode::LabelDef(l) => format!("#label(<{}>)", l),

@@ -234,6 +234,13 @@ pub struct PendingReference {
     pub ref_type: ReferenceType,
 }
 
+/// Pending starred-section state: `\section*{Title}` parses the `*` as the
+/// argument, so the real title arrives as the next curly group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSection {
+    pub level: u8,
+}
+
 /// Conversion state maintained during AST traversal
 #[derive(Debug, Default)]
 pub struct ConversionState {
@@ -251,6 +258,8 @@ pub struct ConversionState {
     pub pending_citation: Option<PendingCitation>,
     /// Pending reference state
     pub pending_reference: Option<PendingReference>,
+    /// Pending starred-section title capture
+    pub pending_section: Option<PendingSection>,
     /// User-defined macros
     pub macros: HashMap<String, MacroDef>,
     /// Whether we're in preamble
@@ -731,6 +740,39 @@ impl LatexConverter {
         }
     }
 
+    fn handle_pending_section(&mut self, elem: SyntaxElement, output: &mut String) -> bool {
+        let Some(pending) = self.state.pending_section.take() else {
+            return false;
+        };
+        match elem.kind() {
+            SyntaxKind::TokenWhiteSpace
+            | SyntaxKind::TokenLineBreak
+            | SyntaxKind::TokenAsterisk => {
+                self.state.pending_section = Some(pending);
+                true
+            }
+            SyntaxKind::ItemCurly => {
+                if let SyntaxElement::Node(node) = elem {
+                    let raw = self.extract_curly_inner_content(&node);
+                    let title = self.convert_fragment(&raw);
+                    let _ = write!(
+                        output,
+                        "\n#heading(level: {}, numbering: none)[{}]\n",
+                        pending.level + 1,
+                        title.trim()
+                    );
+                    return true;
+                }
+                self.state.pending_section = Some(pending);
+                false
+            }
+            _ => {
+                self.state.pending_section = Some(pending);
+                false
+            }
+        }
+    }
+
     /// Visit a syntax element (node or token)
     pub fn visit_element(&mut self, elem: SyntaxElement, output: &mut String) {
         use SyntaxKind::*;
@@ -739,6 +781,9 @@ impl LatexConverter {
             return;
         }
         if self.handle_pending_reference(elem.clone(), output) {
+            return;
+        }
+        if self.handle_pending_section(elem.clone(), output) {
             return;
         }
 
@@ -818,7 +863,15 @@ impl LatexConverter {
                             output.push(' ');
                         }
                     } else {
-                        output.push_str(text);
+                        // LaTeX text-mode opening quotes (`` and `) use backticks,
+                        // which would start a Typst raw block. Map them to plain
+                        // quote characters (closing quotes are TokenApostrophe).
+                        if text.contains('`') {
+                            let converted = text.replace("``", "\"").replace('`', "'");
+                            output.push_str(&converted);
+                        } else {
+                            output.push_str(text);
+                        }
                     }
                 }
             }
@@ -910,7 +963,9 @@ impl LatexConverter {
                     output.push_str("\\*");
                 }
             }
-            TokenAtSign => output.push('@'),
+            // A literal `@` (e.g. in an email) is reference syntax in Typst, so
+            // escape it; otherwise `name@host` reads as a broken `@host` ref.
+            TokenAtSign => output.push_str("\\@"),
             TokenSemicolon => output.push(';'),
             TokenDitto => output.push('"'),
             TokenLParen => output.push('('),
@@ -1509,10 +1564,18 @@ impl LatexConverter {
         if self.state.title.is_some() || self.state.author.is_some() {
             doc.push_str("#align(center)[\n");
             if let Some(ref title) = self.state.title {
-                let _ = writeln!(doc, "  #text(size: 2em, weight: \"bold\")[{}]", title);
+                let _ = writeln!(
+                    doc,
+                    "  #text(size: 2em, weight: \"bold\")[{}]",
+                    escape_typst_inline(title)
+                );
             }
             if let Some(ref author) = self.state.author {
-                let _ = write!(doc, "  \n  #text(size: 1.2em)[{}]\n", author);
+                let _ = write!(
+                    doc,
+                    "  \n  #text(size: 1.2em)[{}]\n",
+                    escape_typst_inline(author)
+                );
             }
             if let Some(ref date) = self.state.date {
                 if date == "\\today" {
@@ -1620,4 +1683,18 @@ impl Default for LatexConverter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Escape characters that would misparse inside a Typst content block `[...]`
+/// (used for generic-path title/author metadata): `@` (reference), `#` (code),
+/// `<`/`>` (labels), and `{`/`}` (code blocks).
+fn escape_typst_inline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '@' | '#' | '<' | '>' | '{' | '}') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }

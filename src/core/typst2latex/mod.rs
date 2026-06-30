@@ -441,7 +441,24 @@ fn default_wrapper(content: &str, options: &T2LOptions) -> String {
     doc.push_str("\\usepackage{xcolor}\n");
     doc.push_str("\\usepackage{longtable}\n"); // For tables
     doc.push_str("\\usepackage{booktabs}\n"); // For better tables
+    doc.push_str("\\usepackage{amsthm}\n"); // theorem environments
+    doc.push_str("\\usepackage{algorithm}\n");
+    doc.push_str("\\usepackage{algpseudocode}\n");
+    doc.push_str("\\usepackage{natbib}\n"); // \citet / \citep
     doc.push_str("\\usepackage{geometry}\n");
+    // Common theorem-like environments, so converted Typst theorems compile
+    // under the generic article class.
+    for (env, label) in [
+        ("theorem", "Theorem"),
+        ("lemma", "Lemma"),
+        ("proposition", "Proposition"),
+        ("corollary", "Corollary"),
+        ("definition", "Definition"),
+        ("remark", "Remark"),
+        ("example", "Example"),
+    ] {
+        doc.push_str(&format!("\\newtheorem{{{env}}}{{{label}}}\n"));
+    }
     doc.push_str("\\geometry{a4paper, margin=2cm}\n");
 
     // Title and author

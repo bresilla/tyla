@@ -666,12 +666,12 @@ pub fn reference_to_typst(reference: &Reference) -> String {
             }
         }
         ReferenceType::Page => {
-            let target = if is_simple_key(&reference.target) {
-                format!("@{}", reference.target)
-            } else {
-                format!("#ref(<{}>)", reference.target)
-            };
-            format!("#locate(loc => {{{}.page()}})", target)
+            // `\pageref{x}` -> the page number where label x sits. `@x` is markup
+            // and invalid inside a code expression, so query the page counter.
+            format!(
+                "#context counter(page).at(label(\"{}\")).first()",
+                reference.target
+            )
         }
         _ => {
             if is_simple_key(&reference.target) {
@@ -950,7 +950,7 @@ mod tests {
         };
         assert_eq!(
             reference_to_typst(&page),
-            "#locate(loc => {@fig-one.page()})"
+            "#context counter(page).at(label(\"fig-one\")).first()"
         );
     }
 

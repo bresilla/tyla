@@ -1,0 +1,3 @@
+# downloaded template files (fetched by fetch.sh, not vendored)
+typst/
+latex/

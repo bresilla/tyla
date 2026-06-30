@@ -48,6 +48,9 @@ pub struct Frontmatter {
     pub keywords: Vec<String>,
     /// elsarticle: the target journal (drives the "submitted to …" footer).
     pub journal: Option<String>,
+    /// Bibliography file name (without extension), from a `bibliography("…")`
+    /// template argument or body call.
+    pub bib_file: Option<String>,
 }
 
 /// Detect a known paper-template show rule and extract its front matter.
@@ -130,7 +133,24 @@ pub fn detect_frontmatter(source: &str) -> Option<Frontmatter> {
         abstract_text,
         keywords,
         journal,
+        bib_file: extract_bib_file(source),
     })
+}
+
+/// Find the bibliography file from the first `bibliography("…")` call, whether it
+/// is passed as a template argument or used standalone in the body. The
+/// extension is dropped so it can be re-emitted as `\bibliography{name}`.
+fn extract_bib_file(source: &str) -> Option<String> {
+    let idx = source.find("bibliography(")?;
+    let rest = &source[idx + "bibliography(".len()..];
+    let q1 = rest.find('"')?;
+    let after = &rest[q1 + 1..];
+    let q2 = after.find('"')?;
+    let file = after[..q2]
+        .trim_end_matches(".bib")
+        .trim_end_matches(".yaml")
+        .trim_end_matches(".yml");
+    (!file.is_empty()).then(|| file.to_string())
 }
 
 fn parse_authors(value: &Value) -> Vec<Author> {
@@ -203,7 +223,11 @@ fn content_to_latex(nodes: &[ContentNode]) -> String {
 /// taken from its first sectioning command, and any in-body bibliography call is
 /// re-emitted with the template's citation style just before `\end{document}`.
 pub fn assemble_document(fm: &Frontmatter, body: &str) -> String {
-    let bib = extract_bibliography_name(body).unwrap_or_else(|| "references".to_string());
+    let bib = fm
+        .bib_file
+        .clone()
+        .or_else(|| extract_bibliography_name(body))
+        .unwrap_or_else(|| "references".to_string());
     let body = slice_body(body);
 
     let mut doc = render_preamble(fm);
